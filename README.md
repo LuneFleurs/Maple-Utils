@@ -90,3 +90,20 @@ npm run tauri:build
 ```text
 src-tauri/target/release/maple-utils.exe
 ```
+
+## GitHub Release 배포
+
+이 저장소는 GitHub Actions로 Windows 실행 파일을 빌드하고 Release에 첨부할 수 있습니다.
+
+태그를 만들고 push하면 자동으로 Release가 생성됩니다.
+
+```powershell
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+성공하면 GitHub의 `Releases` 페이지에 아래 형식의 파일이 올라갑니다.
+
+```text
+Maple-Utils-v0.1.0.exe
+```

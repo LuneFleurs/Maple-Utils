@@ -1,0 +1,71 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    name: Build Windows EXE
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build app
+        run: npm run tauri:build
+
+      - name: Prepare release asset
+        shell: pwsh
+        run: |
+          $version = $env:GITHUB_REF_NAME
+          if (-not $version) {
+            $version = "manual"
+          }
+
+          New-Item -ItemType Directory -Force -Path release | Out-Null
+          Copy-Item `
+            -LiteralPath "src-tauri/target/release/maple-utils.exe" `
+            -Destination "release/Maple-Utils-$version.exe" `
+            -Force
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Maple-Utils-Windows
+          path: release/*.exe
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = $env:GITHUB_REF_NAME
+          $asset = "release/Maple-Utils-$tag.exe"
+
+          if (gh release view $tag *> $null) {
+            gh release upload $tag $asset --clobber
+          } else {
+            gh release create $tag $asset `
+              --title "Maple Utils $tag" `
+              --notes "Windows release build."
+          }
