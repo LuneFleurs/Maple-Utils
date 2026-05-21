@@ -1,0 +1,40 @@
+# Dependencies
+node_modules/
+
+# Frontend build output
+dist/
+
+# Tauri/Rust build output
+src-tauri/target/
+src-tauri/gen/
+
+# Local reference and reverse-engineering material
+References/
+
+# Local icon test variants
+보라.png
+파랑.png
+하양.png
+
+# Environment and local config
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
+
+# Native build byproducts
+*.pdb
+*.d
