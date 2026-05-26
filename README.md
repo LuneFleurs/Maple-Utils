@@ -71,6 +71,22 @@ Maple Utils의 포커스 기능은 게임 프로세스의 메모리, 파일, 네
 - 창 목록과 child window 확인: `EnumWindows`, `EnumChildWindows`, `GetAncestor`
 - 창 스타일 확인 및 변경: `GetWindowLongPtrW`, `SetWindowLongPtrW`, `SetWindowPos`
 - 게임 창을 다시 앞으로 가져오기: `SetForegroundWindow`, `BringWindowToTop`, `SetActiveWindow`, `SetFocus`, `AttachThreadInput`
+- 창 선택 중 키/마우스 버튼 상태 확인: `GetAsyncKeyState`
+- 창 선택 중 마우스 클릭 위치 확인: `SetWindowsHookExW`의 `WH_MOUSE_LL`
+
+## 키보드 입력 관련 동작
+
+Maple Utils는 키보드 입력을 가로채거나 새로 만들어 보내지 않습니다.
+
+- 키보드 후킹을 사용하지 않습니다.
+- `WH_KEYBOARD`, `WH_KEYBOARD_LL` 같은 키보드 hook을 등록하지 않습니다.
+- `SendInput`, `keybd_event` 같은 키보드 입력 주입 API를 사용하지 않습니다.
+- 게임 창으로 키 입력을 대신 보내거나, 눌린 키를 반복 입력하거나, 자동 입력을 만들지 않습니다.
+- 키보드 입력 내용을 기록하거나 저장하지 않습니다.
+
+다만 창 선택 화면에서는 사용자가 선택을 취소하거나 확정했는지 확인하기 위해 `GetAsyncKeyState`로 일부 키 상태를 확인합니다. 확인 대상은 `Esc`, `Enter`, `Space`, 마우스 왼쪽/오른쪽 버튼입니다. 이 동작은 키 입력을 가로채는 hook이 아니라, 현재 키가 눌려 있는지 Windows에 조회하는 방식입니다.
+
+또한 `SetWindowsHookExW(WH_MOUSE_LL)`를 사용하지만, 이것은 키보드 후킹이 아니라 창 선택 중 마우스 클릭 위치를 잡기 위한 저수준 마우스 hook입니다. 일반 포커스 유지 동작 중 키보드 hook은 사용하지 않습니다.
 
 아래와 같은 게임 메모리 조작 계열 동작은 사용하지 않습니다.
 
