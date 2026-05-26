@@ -16,12 +16,14 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
+        with:
+          token: ${{ github.token }}
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
-          node-version: 22
+          node-version: 24
           cache: npm
 
       - name: Setup Rust
@@ -66,11 +68,30 @@ jobs:
         run: |
           $tag = $env:GITHUB_REF_NAME
           $asset = "release/Maple-Utils-$tag.exe"
+          $notesPath = "release/notes-$tag.md"
+
+          $notes = @"
+          ## 변경 사항
+
+          - Chrome에서 차단 대상 창이 포커스를 가져가던 문제를 수정했습니다.
+          - 차단 대상의 child HWND까지 포커스 차단을 적용하도록 개선했습니다.
+          - Chrome이 foreground를 가져간 경우 지정한 게임 창으로 다시 복귀하도록 개선했습니다.
+          - 포커스 감시 주기를 75ms, 30ms, 16ms 중 선택할 수 있도록 추가했습니다.
+
+          ## 주의 사항
+
+          - 이 기능은 게임 메모리를 읽거나 쓰지 않지만, Windows 창 포커스와 창 스타일을 조정합니다.
+          - 설정을 마친 뒤 설정 모드를 꺼야 포커스 유지가 동작합니다.
+          "@
+          $notes | Set-Content -Path $notesPath -Encoding UTF8
 
           if (gh release view $tag *> $null) {
+            gh release edit $tag `
+              --title "Maple Utils $tag" `
+              --notes-file $notesPath
             gh release upload $tag $asset --clobber
           } else {
             gh release create $tag $asset `
               --title "Maple Utils $tag" `
-              --notes "Windows release build."
+              --notes-file $notesPath
           }
