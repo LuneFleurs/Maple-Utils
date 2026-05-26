@@ -61,6 +61,8 @@ const HOVER_BORDER_SIZE: i32 = 4;
 const HOVER_BORDER_ALPHA: u8 = 185;
 const PICKER_POLL_MS: u64 = 8;
 const PICKER_TIMEOUT_TICKS: usize = 3_750;
+const DEFAULT_FOCUS_GUARD_POLL_MS: u64 = 75;
+const FOCUS_GUARD_POLL_OPTIONS: [u64; 3] = [75, 30, 16];
 type Hwnd = isize;
 type Hhook = isize;
 type Bool = i32;
@@ -187,6 +189,8 @@ struct Settings {
     helper_topmost: bool,
     settings_mode: bool,
     game_topmost: bool,
+    #[serde(default = "default_focus_guard_poll_ms")]
+    focus_guard_poll_ms: u64,
     restore_filter_on_exit: bool,
     filter_on_preset: FilterPreset,
     #[serde(default)]
@@ -201,6 +205,7 @@ impl Default for Settings {
             helper_topmost: true,
             settings_mode: false,
             game_topmost: false,
+            focus_guard_poll_ms: DEFAULT_FOCUS_GUARD_POLL_MS,
             restore_filter_on_exit: true,
             filter_on_preset: FilterPreset::default(),
             filter_presets: vec![NamedFilterPreset {
@@ -209,6 +214,18 @@ impl Default for Settings {
             }],
             filter_backup: FilterBackup::default(),
         }
+    }
+}
+
+fn default_focus_guard_poll_ms() -> u64 {
+    DEFAULT_FOCUS_GUARD_POLL_MS
+}
+
+fn sanitize_focus_guard_poll_ms(value: u64) -> u64 {
+    if FOCUS_GUARD_POLL_OPTIONS.contains(&value) {
+        value
+    } else {
+        DEFAULT_FOCUS_GUARD_POLL_MS
     }
 }
 
@@ -243,6 +260,13 @@ struct AppSnapshot {
 struct FocusTarget {
     info: WindowInfo,
     original_ex_style: isize,
+    original_child_ex_styles: Vec<WindowExStyleSnapshot>,
+}
+
+#[derive(Clone, Debug)]
+struct WindowExStyleSnapshot {
+    hwnd: Hwnd,
+    ex_style: isize,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -354,6 +378,7 @@ fn main() {
                 .ok_or_else(|| "main window not found".to_string())?;
 
             apply_startup_window_style(&window, &handle)?;
+            start_focus_guard(app.handle().clone());
 
             window.on_window_event(move |event| {
                 if matches!(event, WindowEvent::CloseRequested { .. }) {
@@ -372,6 +397,7 @@ fn main() {
             set_helper_topmost,
             set_settings_mode,
             keep_game_foreground,
+            set_focus_guard_poll_ms,
             apply_focus_target,
             apply_focus_targets,
             apply_focus_all_non_game,
@@ -480,6 +506,21 @@ fn set_settings_mode(
 }
 
 #[tauri::command]
+fn set_focus_guard_poll_ms(
+    state: tauri::State<'_, Mutex<RuntimeState>>,
+    poll_ms: u64,
+) -> Result<AppSnapshot, String> {
+    if !FOCUS_GUARD_POLL_OPTIONS.contains(&poll_ms) {
+        return Err("지원하는 감시 주기는 75ms, 30ms, 16ms입니다.".into());
+    }
+
+    let mut state = state.lock().map_err(|_| "state lock failed")?;
+    state.settings.focus_guard_poll_ms = poll_ms;
+    save_settings(&state.settings)?;
+    snapshot(&state)
+}
+
+#[tauri::command]
 fn keep_game_foreground(
     app: tauri::AppHandle,
     state: tauri::State<'_, Mutex<RuntimeState>>,
@@ -552,15 +593,18 @@ fn apply_focus_target_in_state(state: &mut RuntimeState, hwnd: Hwnd) -> Result<(
         .find(|target| target.info.hwnd == hwnd)
     {
         target.info = info;
+        remember_child_ex_styles(target);
     } else {
         let original_ex_style = unsafe { GetWindowLongPtrW(hwnd, GWL_EXSTYLE) };
+        let original_child_ex_styles = capture_child_ex_styles(hwnd);
         state.focus_targets.push(FocusTarget {
             info,
             original_ex_style,
+            original_child_ex_styles,
         });
     }
 
-    set_noactivate(hwnd, true)?;
+    set_noactivate_tree(hwnd, true)?;
     Ok(())
 }
 
@@ -607,7 +651,7 @@ fn add_focus_exception_in_state(state: &mut RuntimeState, hwnd: Hwnd) -> Result<
         .position(|target| target.info.hwnd == hwnd)
     {
         let target = state.focus_targets.remove(index);
-        restore_window_ex_style(target.info.hwnd, target.original_ex_style)?;
+        restore_focus_target_window(target)?;
     }
 
     if let Some(exception) = state
@@ -677,20 +721,25 @@ fn apply_focus_all_non_game(
             continue;
         }
 
-        if state
-            .focus_targets
-            .iter()
-            .any(|target| target.info.hwnd == info.hwnd)
-        {
-            let _ = set_noactivate(info.hwnd, true);
+        if state.focus_targets.iter_mut().any(|target| {
+            if target.info.hwnd == info.hwnd {
+                remember_child_ex_styles(target);
+                let _ = set_noactivate_tree(info.hwnd, true);
+                true
+            } else {
+                false
+            }
+        }) {
             continue;
         }
 
         let original_ex_style = unsafe { GetWindowLongPtrW(info.hwnd, GWL_EXSTYLE) };
-        if set_noactivate(info.hwnd, true).is_ok() {
+        let original_child_ex_styles = capture_child_ex_styles(info.hwnd);
+        if set_noactivate_tree(info.hwnd, true).is_ok() {
             state.focus_targets.push(FocusTarget {
                 info,
                 original_ex_style,
+                original_child_ex_styles,
             });
         }
     }
@@ -710,7 +759,7 @@ fn restore_focus_target(
         .position(|target| target.info.hwnd == hwnd)
     {
         let target = state.focus_targets.remove(index);
-        restore_window_ex_style(target.info.hwnd, target.original_ex_style)?;
+        restore_focus_target_window(target)?;
     }
     snapshot(&state)
 }
@@ -1105,7 +1154,7 @@ fn cleanup(app: &tauri::AppHandle) {
 fn restore_all_focus_targets(state: &mut RuntimeState) {
     let targets = std::mem::take(&mut state.focus_targets);
     for target in targets {
-        let _ = restore_window_ex_style(target.info.hwnd, target.original_ex_style);
+        let _ = restore_focus_target_window(target);
     }
 }
 
@@ -1124,6 +1173,55 @@ fn restore_game_foreground(app: &tauri::AppHandle) {
             force_foreground_window(game.hwnd);
         }
     }
+}
+
+fn start_focus_guard(app: tauri::AppHandle) {
+    thread::spawn(move || loop {
+        thread::sleep(Duration::from_millis(focus_guard_poll_ms(&app)));
+
+        let foreground = unsafe { GetForegroundWindow() };
+        if foreground == 0 {
+            continue;
+        }
+
+        if let Some(game_hwnd) = focus_guard_game_to_restore(&app, foreground) {
+            force_foreground_window(game_hwnd);
+        }
+    });
+}
+
+fn focus_guard_poll_ms(app: &tauri::AppHandle) -> u64 {
+    let state = app.state::<Mutex<RuntimeState>>();
+    let Ok(state) = state.lock() else {
+        return DEFAULT_FOCUS_GUARD_POLL_MS;
+    };
+    sanitize_focus_guard_poll_ms(state.settings.focus_guard_poll_ms)
+}
+
+fn focus_guard_game_to_restore(app: &tauri::AppHandle, foreground: Hwnd) -> Option<Hwnd> {
+    let state = app.state::<Mutex<RuntimeState>>();
+    let Ok(mut state) = state.lock() else {
+        return None;
+    };
+
+    if state.settings.settings_mode || !state.settings.helper_noactivate {
+        return None;
+    }
+
+    let game_hwnd = state.game.as_ref()?.hwnd;
+    if !is_window(game_hwnd) || same_root_window(foreground, game_hwnd) {
+        return None;
+    }
+
+    for target in state.focus_targets.iter_mut() {
+        if same_root_window(foreground, target.info.hwnd) {
+            remember_child_ex_styles(target);
+            let _ = set_noactivate_tree(target.info.hwnd, true);
+            return Some(game_hwnd);
+        }
+    }
+
+    None
 }
 
 fn snapshot(state: &RuntimeState) -> Result<AppSnapshot, String> {
@@ -1171,7 +1269,7 @@ fn select_game_window_in_state(state: &mut RuntimeState, hwnd: Hwnd) -> Result<(
         .position(|target| target.info.hwnd == hwnd)
     {
         let target = state.focus_targets.remove(index);
-        restore_window_ex_style(target.info.hwnd, target.original_ex_style)?;
+        restore_focus_target_window(target)?;
     }
     state
         .focus_exceptions
@@ -1328,6 +1426,58 @@ fn restore_window_ex_style(hwnd: Hwnd, ex_style: isize) -> Result<(), String> {
     Ok(())
 }
 
+fn restore_focus_target_window(target: FocusTarget) -> Result<(), String> {
+    let mut first_error = None;
+
+    for snapshot in target.original_child_ex_styles {
+        if let Err(error) = restore_window_ex_style(snapshot.hwnd, snapshot.ex_style) {
+            first_error.get_or_insert(error);
+        }
+    }
+
+    if let Err(error) = restore_window_ex_style(target.info.hwnd, target.original_ex_style) {
+        first_error.get_or_insert(error);
+    }
+
+    match first_error {
+        Some(error) => Err(error),
+        None => Ok(()),
+    }
+}
+
+fn capture_child_ex_styles(hwnd: Hwnd) -> Vec<WindowExStyleSnapshot> {
+    let mut snapshots = Vec::new();
+    unsafe {
+        EnumChildWindows(
+            hwnd,
+            Some(enum_child_ex_style_snapshot_callback),
+            &mut snapshots as *mut _ as isize,
+        );
+    }
+    snapshots
+}
+
+fn remember_child_ex_styles(target: &mut FocusTarget) {
+    for snapshot in capture_child_ex_styles(target.info.hwnd) {
+        if !target
+            .original_child_ex_styles
+            .iter()
+            .any(|existing| existing.hwnd == snapshot.hwnd)
+        {
+            target.original_child_ex_styles.push(snapshot);
+        }
+    }
+}
+
+unsafe extern "system" fn enum_child_ex_style_snapshot_callback(hwnd: Hwnd, lparam: isize) -> Bool {
+    let snapshots = &mut *(lparam as *mut Vec<WindowExStyleSnapshot>);
+    snapshots.push(WindowExStyleSnapshot {
+        hwnd,
+        ex_style: GetWindowLongPtrW(hwnd, GWL_EXSTYLE),
+    });
+    1
+}
+
 fn set_noactivate_tree(hwnd: Hwnd, enabled: bool) -> Result<(), String> {
     set_noactivate(hwnd, enabled)?;
     unsafe {
@@ -1430,6 +1580,23 @@ fn ensure_window(hwnd: Hwnd) -> Result<(), String> {
 
 fn is_window(hwnd: Hwnd) -> bool {
     hwnd != 0 && unsafe { IsWindow(hwnd) != 0 }
+}
+
+fn root_window(hwnd: Hwnd) -> Hwnd {
+    if hwnd == 0 {
+        return 0;
+    }
+
+    let root = unsafe { GetAncestor(hwnd, GA_ROOT) };
+    if root == 0 {
+        hwnd
+    } else {
+        root
+    }
+}
+
+fn same_root_window(left: Hwnd, right: Hwnd) -> bool {
+    left != 0 && right != 0 && root_window(left) == root_window(right)
 }
 
 fn find_own_window() -> Result<Hwnd, String> {
@@ -1940,6 +2107,7 @@ fn load_settings() -> Settings {
     if settings.filter_on_preset.is_legacy_default() {
         settings.filter_on_preset = FilterPreset::default();
     }
+    settings.focus_guard_poll_ms = sanitize_focus_guard_poll_ms(settings.focus_guard_poll_ms);
     if missing_named_presets && settings.filter_presets.is_empty() {
         settings.filter_presets.push(NamedFilterPreset {
             name: "기본".into(),

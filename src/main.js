@@ -6,6 +6,7 @@ import appIconUrl from "./assets/app-icon.png";
 const app = document.querySelector("#app");
 const THEME_STORAGE_KEY = "maple-utils-theme";
 const PANEL_STORAGE_KEY = "maple-utils-panel";
+const FOCUS_GUARD_POLL_OPTIONS = [75, 30, 16];
 const PICKER_MODE = new URLSearchParams(window.location.search).get("picker");
 
 function loadTheme() {
@@ -414,6 +415,9 @@ function render(options = {}) {
   const focusCandidateWindows = availableWindows.filter((win) => !game || win.hwnd !== game.hwnd);
   const focusTargets = snapshot.focus_targets ?? [];
   const focusExceptions = snapshot.focus_exceptions ?? [];
+  const focusGuardPollMs = FOCUS_GUARD_POLL_OPTIONS.includes(settings.focus_guard_poll_ms)
+    ? settings.focus_guard_poll_ms
+    : 75;
 
   if (!availableWindows.some((win) => win.hwnd === state.selectedGameHwnd)) {
     state.selectedGameHwnd = null;
@@ -429,6 +433,11 @@ function render(options = {}) {
         ${toggleButton("포커스 유지", "helper-noactivate", settings.helper_noactivate, !settings.settings_mode)}
         ${toggleButton("항상 위", "helper-topmost", settings.helper_topmost, true)}
       </div>
+      <div class="selected spaced">
+        <span>감시 주기</span>
+        <small>낮을수록 빠르게 복귀하지만 호출 빈도가 늘어납니다</small>
+      </div>
+      ${focusGuardPollOptions(focusGuardPollMs)}
     </section>
 
     <section>
@@ -590,6 +599,18 @@ function toggleButton(label, id, checked, enabled) {
   `;
 }
 
+function focusGuardPollOptions(current) {
+  return `
+    <div class="segmented" role="group" aria-label="포커스 감시 주기">
+      ${FOCUS_GUARD_POLL_OPTIONS.map((pollMs) => `
+        <button class="segment ${pollMs === current ? "active" : ""}" data-focus-guard-poll-ms="${pollMs}" aria-pressed="${pollMs === current}">
+          ${pollMs}ms
+        </button>
+      `).join("")}
+    </div>
+  `;
+}
+
 function bindEvents() {
   document.querySelector('[data-toggle="helper-noactivate"]')?.addEventListener("click", () => {
     call("set_helper_noactivate", { enabled: !state.snapshot.settings.helper_noactivate });
@@ -605,6 +626,14 @@ function bindEvents() {
 
   document.querySelector('[data-toggle="game-topmost"]')?.addEventListener("click", () => {
     call("set_game_topmost", { enabled: !state.snapshot.settings.game_topmost });
+  });
+
+  document.querySelectorAll("[data-focus-guard-poll-ms]").forEach((button) => {
+    button.addEventListener("click", () => {
+      call("set_focus_guard_poll_ms", {
+        pollMs: Number.parseInt(button.dataset.focusGuardPollMs, 10),
+      });
+    });
   });
 
   document.querySelectorAll("[data-pick-game-window]").forEach((button) => {

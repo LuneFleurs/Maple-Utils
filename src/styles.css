@@ -662,6 +662,35 @@ button:disabled {
   transform: translateX(18px);
 }
 
+.segmented {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin: 10px 16px 0;
+  border: 1px solid var(--glass-line-soft);
+  background: var(--content-surface);
+}
+
+.segment {
+  min-height: 38px;
+  padding: 0 8px;
+  border: 0;
+  border-right: 1px solid var(--glass-line-soft);
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.segment:last-child {
+  border-right: 0;
+}
+
+.segment.active {
+  background: var(--content-surface-strong);
+  color: var(--accent);
+}
+
 .selected,
 .current {
   display: flex;
